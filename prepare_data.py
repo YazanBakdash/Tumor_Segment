@@ -4,20 +4,10 @@ import nibabel as nib
 import torch
 from dotenv import load_dotenv
 import os
-import torchvision.transforms.functional as TF
+from torchvision.transforms.functional import resize as TF_resize
 
 load_dotenv()
-data_dir = Path(os.getenv("DATA_DIR"))
-
-def load_image_and_mask(dir):
-    image_path = next(dir.glob("*image*"))
-    image = nib.load(image_path).get_fdata()
-    mask_paths = sorted(dir.glob("*mask*"))
-    combined_mask = np.zeros_like(image)
-    for path in mask_paths:
-        mask = nib.load(path).get_fdata()
-        combined_mask = np.logical_or(combined_mask, mask)
-    return image, combined_mask.astype(np.float32)
+data_dir = Path(os.getenv("BrainMetShare"))
 
 def largest_slice(mask):
     slice_sums = mask.sum(axis=(0, 1))
@@ -26,29 +16,31 @@ def largest_slice(mask):
 
 # save all mri images as npy files
 data_dir = Path(data_dir)
-out_dir = data_dir.parent / 'BCBM_npy'
+out_dir = data_dir.parent.parent.parent / 'BrainMetShare_t1_gd'
 out_dir.mkdir(parents=True, exist_ok=True)
 
 for mri_dir in data_dir.iterdir():
     if not mri_dir.is_dir():
         continue
 
-    image, mask = load_image_and_mask(mri_dir)
-    z = largest_slice(mask)
+    t1_post = nib.load(mri_dir / "t1_gd.nii.gz").get_fdata()
+    mask = nib.load(mri_dir / "seg.nii.gz").get_fdata()
 
+    # Normalize
+    def normalize(x):
+        return (x - x.mean()) / (x.std() + 1e-8)
+
+    t1_post = normalize(t1_post)
+
+    # Convert to tensors and resize
     target_size = (256, 256)
+    t1_tensor = TF_resize(torch.tensor(t1_post).unsqueeze(0), target_size).squeeze(0)
+    mask_tensor = TF_resize(torch.tensor(mask).unsqueeze(0), target_size).squeeze(0)
 
-    image_slice = torch.tensor(image[:, :, z], dtype=torch.float32).unsqueeze(0)
-    image_slice = TF.resize(image_slice, target_size)
-
-    mask_slice = torch.tensor(mask[:, :, z], dtype=torch.float32).unsqueeze(0)
-    mask_slice = TF.resize(mask_slice, target_size)
-
-    # Save as .npy (optional: squeeze to [H, W])
+    # Save
     new_dir = out_dir / mri_dir.name
     new_dir.mkdir(parents=True, exist_ok=True)
-
-    np.save(new_dir / "image.npy", image_slice.numpy())
-    np.save(new_dir / "mask.npy", mask_slice.numpy().astype(np.uint8))
+    np.save(new_dir / "image.npy", t1_tensor.numpy().astype(np.float32))
+    np.save(new_dir / "mask.npy", mask_tensor.numpy().astype(np.uint8))
 
     print(f"Saved: {new_dir / 'image.npy'}, {new_dir / 'mask.npy'}")
